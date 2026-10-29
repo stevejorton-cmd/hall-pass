@@ -31,3 +31,10 @@ both satisfy this by default.
 
 Replace `index.html` with the new version, commit, let the host redeploy.
 The public URL must stay the same so the Google Site embed never needs editing.
+
+## Live
+
+- Game: https://hall-pass-git.pages.dev
+- Source repo: https://github.com/stevejorton-cmd/hall-pass
+- Host: Cloudflare Pages (project `hall-pass-git`), connected to this repo —
+  every push to `main` redeploys automatically; the live URL never changes.
