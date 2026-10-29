@@ -38,3 +38,4 @@ The public URL must stay the same so the Google Site embed never needs editing.
 - Source repo: https://github.com/stevejorton-cmd/hall-pass
 - Host: Cloudflare Pages (project `hall-pass-git`), connected to this repo —
   every push to `main` redeploys automatically; the live URL never changes.
+- Deploy check: 2026-10-29.
