@@ -9749,7 +9749,7 @@ function loadMeta(){
     seenHints = new Set((localStorage.getItem('hallpass.hints') || '').split(',').filter(Boolean));
     unlockedP = Math.max(1, Math.min(9, parseInt(localStorage.getItem('hallpass.unlocked' + gk()) || '1', 10) || 1));
     dailyBest = parseInt(localStorage.getItem(dailyKey()) || '0', 10) || 0;
-    const sj = localStorage.getItem('hallpass.save' + gk()); saveGame = sj ? JSON.parse(sj) : null;
+    const sj = localStorage.getItem('hallpass.save' + gk()); saveGame = sj ? normaliseSave(JSON.parse(sj)) : null;
     loadEndless(); loadBossBest();
   } catch (e) { saveGame = null; }
   applyStyle();
@@ -9956,10 +9956,64 @@ function writeSave(obj){
   saveGame = obj;
   try { if (obj) localStorage.setItem('hallpass.save' + gk(), JSON.stringify(obj)); else localStorage.removeItem('hallpass.save' + gk()); } catch (e) {}
 }
+function normaliseSave(raw){
+  const obj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  const count = v => Number.isSafeInteger(v) && v >= 0;
+  const value = v => Number.isFinite(v) && v >= 0;
+  if (!obj(raw) || !Number.isInteger(raw.stage) || raw.stage < 0 || raw.stage >= STAGES.length) return null;
+  if (!['score', 'stars', 'lives'].every(k => count(raw[k])) || raw.lives < 1) return null;
+  if (raw.change !== undefined && !count(raw.change)) return null;
+  const mode = raw.mode === undefined ? 'classic' : raw.mode;
+  const phase = raw.phase === undefined ? 'card' : raw.phase;
+  if (!['classic', 'daily'].includes(mode) || !['play', 'card', 'clear', 'pickcard'].includes(phase)) return null;
+  const s = { stage:raw.stage, score:raw.score, stars:raw.stars, lives:raw.lives, mode,
+              change:raw.change === undefined ? 0 : raw.change, phase,
+              mods:Array.isArray(raw.mods) ? [...new Set(raw.mods.filter(id => typeof id === 'string' && modById(id)))] : [],
+              check:null };
+  const c = raw.check;
+  if (obj(c) && c.stage === s.stage && Number.isInteger(c.n) && c.n >= -1 &&
+      value(c.x) && value(c.y)) s.check = { stage:c.stage, n:c.n, x:c.x, y:c.y };
+  if (obj(raw.period)) s.period = raw.period;
+  if (phase === 'clear' || phase === 'pickcard'){
+    const r = raw.result;
+    if (!obj(r) || typeof r.rank !== 'string' || !/^[ABCDF]$/.test(r.rank) ||
+        !['bonus', 'stars', 'total', 'clout', 'comboBest', 'viralPeak', 'hw', 'hwTotal'].every(k => count(r[k]))) return null;
+    const last = r.last;
+    if (!obj(last) || !['sec', 'par', 'best'].every(k => value(last[k]))) return null;
+    s.result = { rank:r.rank, bonus:r.bonus, stars:r.stars, total:r.total, clout:r.clout,
+                 comboBest:r.comboBest, viralPeak:r.viralPeak, hw:r.hw, hwTotal:r.hwTotal,
+                 last:{ sec:last.sec, par:last.par, best:last.best,
+                        newBest:last.newBest === true, under:last.under === true, perfect:last.perfect === true,
+                        secret:last.secret === true, ghost:last.ghost === true } };
+    if (phase === 'pickcard'){
+      const ids = raw.deal;
+      const valid = mode === 'classic' && s.stage + 1 < STAGES.length &&
+        Array.isArray(ids) && ids.length > 0 && ids.length <= 3 && new Set(ids).size === ids.length &&
+        ids.every(id => typeof id === 'string' && modById(id) && !s.mods.includes(id));
+      if (valid){
+        s.deal = ids.slice();
+        s.dealSel = Number.isInteger(raw.dealSel) ? Math.max(0, Math.min(ids.length - 1, raw.dealSel)) : 0;
+      } else s.phase = 'clear';
+    }
+  }
+  return s;
+}
+function restoreSavedPhase(s){
+  if (s.phase !== 'clear' && s.phase !== 'pickcard') return;
+  const r = s.result;
+  periodRank = r.rank; bonus = r.bonus; periodStars = r.stars; periodTotal = r.total;
+  periodClout = r.clout; comboBest = r.comboBest; viralPeak = r.viralPeak;
+  hw = r.hw; hwTotal = r.hwTotal; lastClear = { ...r.last };
+  state = s.phase; clearT = 53; rankStamp = 18; anyKeyTick = false;
+  music.on = false; music.setLayer(false);
+  if (state === 'pickcard'){ deal = s.deal.slice(); dealSel = s.dealSel; }
+}
 function continueGame(){
-  if (!saveGame) return;
-  if (saveGame.mode && saveGame.mode !== MODE){ MODE = saveGame.mode; try { localStorage.setItem('hallpass.mode', MODE); } catch (e) {} }
-  startGame(saveGame.stage, saveGame);
+  const saved = normaliseSave(saveGame);
+  if (!saved){ saveGame = null; toast('SAVE UNAVAILABLE', 'Start a new run to play', '#FF6B57'); return; }
+  saveGame = saved;
+  if (saved.mode !== MODE){ MODE = saved.mode; try { localStorage.setItem('hallpass.mode', MODE); } catch (e) {} }
+  startGame(saved.stage, saved);
 }
 function toTitle(){ state = 'title'; checkAt = null; loadStage(0); music.on = true; }
 
@@ -10021,22 +10075,29 @@ function restoreCheckpointPath(){
 }
 
 function saveProgress(){
-  if (MODE === 'speed' || MODE === 'endless' || MODE === 'boss') return;   /* all one sitting */
-  writeSave({ stage:stageIndex, score, stars, lives:Math.max(1, lives), mode:MODE, change,
-              mods:[...mods],
-              period:{ quotaDone, frames:periodFrames, damage:periodDmg,
-                startScore:periodStartScore, startStars:periodStartStars, runT, timeLeft,
-                recordValid:periodRecordValid },
-              check:(checkAt && checkAt.stage === stageIndex) ? checkAt : null });
+  if (MODE === 'speed' || MODE === 'endless' || MODE === 'boss') return false;
+  const completed = state === 'clear' || state === 'pickcard';
+  const obj = { stage:stageIndex, score, stars, lives:Math.max(1, lives), mode:MODE, change,
+                mods:[...mods], phase:completed ? state : 'card',
+                period:{ quotaDone, frames:periodFrames, damage:periodDmg, startScore:periodStartScore,
+                         startStars:periodStartStars, runT, timeLeft, recordValid:periodRecordValid },
+                check:(checkAt && checkAt.stage === stageIndex) ? checkAt : null };
+  if (completed){
+    obj.result = { rank:periodRank, bonus, stars:periodStars, total:periodTotal, clout:periodClout,
+                   comboBest, viralPeak, hw, hwTotal, last:lastClear && { ...lastClear } };
+    if (state === 'pickcard'){ obj.deal = deal.slice(); obj.dealSel = dealSel; }
+  }
+  writeSave(obj);
+  return true;
 }
 /* leave for the title screen from anywhere, keeping the run */
 function quitToTitle(){
-  const inRun = state === 'play' || state === 'card' || state === 'clear' || paused;
+  const inRun = state === 'play' || state === 'card' || state === 'clear' || state === 'pickcard' || paused;
   if (inRun){
-    saveProgress();
+    const saved = saveProgress();
     if (score > best){ best = score; saveBest(); }
     saveMeta();
-    toast('PROGRESS SAVED', 'CONTINUE on the title picks it up', '#7FE8C0');
+    if (saved) toast('PROGRESS SAVED', 'CONTINUE on the title picks it up', '#7FE8C0');
   }
   paused = false; overlay = null; tut = null;
   toTitle();
@@ -10281,6 +10342,13 @@ function loadStage(i, fresh){
   /* respawn at the last checkpoint reached, if it belongs to this period */
   let sx = level.start.x, sy = level.start.y;
   if (checkAt && checkAt.stage === i){
+    const cps = level.ents.filter(en => en instanceof Checkpoint);
+    if (!Number.isInteger(checkAt.n) || checkAt.n < -1 || checkAt.n >= cps.length ||
+        !Number.isFinite(checkAt.x) || !Number.isFinite(checkAt.y) ||
+        checkAt.x < 0 || checkAt.x > level.width * TS - 12 ||
+        checkAt.y < 0 || checkAt.y > level.height * TS - 15) checkAt = null;
+  }
+  if (checkAt && checkAt.stage === i){
     sx = checkAt.x; sy = checkAt.y;
     let n = 0;
     for (const en of level.ents) if (en instanceof Checkpoint){ if (n <= checkAt.n) en.on = true; n++; }
@@ -10325,6 +10393,7 @@ function startGame(from, resume){
   loadStage(from);
   if (resume){ restorePeriod(resume); ghostRec = null; }
   state = 'card'; cardT = 0;
+  if (resume) restoreSavedPhase(resume);
   SFX.select();
 }
 

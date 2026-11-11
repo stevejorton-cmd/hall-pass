@@ -86,10 +86,10 @@ export async function runSuite(createGame, html) {
  });
  await test('legacy checkpoint saves are playable without false records',g=>{
   g.run("setDiff(1);startGame(7);const cps=level.ents.filter(e=>e instanceof Checkpoint);const cp=cps[cps.length-1];const old={stage:7,score:200,stars:2,lives:3,mode:'classic',check:{stage:7,n:cps.length-1,x:cp.x,y:cp.foot-player.h}};startGame(7,old);");
-  eq(g.run('periodRecordValid'),false);eq(g.run('level.ents.find(e=>e instanceof PinkLock).open'),true);
+  eq(g.run('level.ents.find(e=>e instanceof PinkLock).open'),true);
   g.run("state='play';periodFrames=1;periodDmg=0;completeLevel()");
   eq(g.run('bestTimes[7]'),0);eq(g.run("achSet.has('flawless')"),false);
-  g.debug.retry();eq(g.run('periodRecordValid'),true);eq(g.run('checkAt'),null);
+  g.debug.retry();eq(g.run('checkAt'),null);g.run("state='play';periodFrames=600;completeLevel()");eq(g.run('bestTimes[7]'),10);
  });
  await test('normal respawn keeps the far-side checkpoint return path open',g=>{
   g.run("setDiff(1);startGame(7);const cps=level.ents.filter(e=>e instanceof Checkpoint);const cp=cps[cps.length-1];checkAt={stage:7,n:cps.length-1,x:cp.x,y:cp.foot-player.h};loadStage(7,false)");
@@ -97,7 +97,46 @@ export async function runSuite(createGame, html) {
  });
  await test('invalid saved timing cannot create a partial-run record',g=>{
   g.run("startGame(0,{stage:0,score:0,stars:0,lives:3,check:{stage:0,n:0,x:32,y:400},period:{frames:'bad'}})");
-  eq(g.run('periodRecordValid'),false);
+  g.run("state='play';periodFrames=1;periodDmg=0;completeLevel()");eq(g.run('bestTimes[0]'),0);
+ });
+
+
+ await test('Continue restores cleared results without paying rewards again',g=>{
+  g.run("startGame();state='play';periodFrames=1800;periodDmg=2;completeLevel()");
+  const before=g.run('({score,clout,bonus,periodRank,periodFrames})');
+  g.run('quitToTitle();continueGame()');eq(g.debug.state,'clear');
+  for(const [k,v] of Object.entries(before))eq(g.run(k),v,k);
+ });
+ await test('pending cards retain selection and one-time life reward across Continue',g=>{
+  g.run("startGame();state='play';completeLevel();afterClear();deal=['caff','wind','loud'];dealSel=1");
+  const lives=g.debug.lives,clout=g.debug.clout;
+  for(let i=0;i<2;i++){g.run('quitToTitle();continueGame()');eq(g.debug.state,'pickcard');eq(g.run('deal.join()'),'caff,wind,loud');eq(g.run('dealSel'),1);eq(g.debug.lives,lives);eq(g.debug.clout,clout);}
+  g.run('takeCard(dealSel)');eq(g.debug.stage,1);eq(g.debug.lives,lives+1);
+  g.run('continueGame()');eq(g.debug.stage,1);eq(g.debug.lives,lives+1);
+ });
+ await test('final-period Continue finishes the run and removes its save',g=>{
+  g.run("startGame(8);state='play';completeLevel();quitToTitle();continueGame()");eq(g.debug.state,'clear');
+  g.run('afterClear()');eq(g.debug.state,'win');eq(g.run('saveGame'),null);
+ });
+ await test('Daily cleared save advances without modifier cards',g=>{
+  g.run("MODE='daily';startGame();state='play';completeLevel();quitToTitle();continueGame();afterClear()");
+  eq(g.debug.state,'card');eq(g.debug.stage,1);
+ });
+ await test('invalid saves are rejected and legacy minimal saves still work',g=>{
+  const base={stage:0,score:0,stars:0,lives:3};
+  for(const bad of [null,[],{},'oops',{...base,stage:99},{...base,stage:-1},{...base,score:'0'},{...base,stars:-1},{...base,lives:0},{...base,mode:'boss'},{...base,change:-1},{...base,phase:'oops'}]){
+   g.run('toTitle();saveGame='+JSON.stringify(bad)+';continueGame()');eq(g.debug.state,'title');
+  }
+  g.run('saveGame='+JSON.stringify(base)+';continueGame()');eq(g.debug.state,'card');g.run('toTitle()');
+  g.run('saveGame={stage:99,score:0,stars:0,lives:3};continueGame()');eq(g.debug.state,'title');
+ });
+ await test('out-of-level checkpoints cannot spawn outside the map',g=>{
+  g.run("saveGame={stage:0,score:0,stars:0,lives:3,check:{stage:0,n:0,x:999999,y:999999}};continueGame()");
+  eq(g.run('checkAt'),null);ok(g.debug.pos.x<100);
+ });
+ await test('invalid saved card offer recovers to paid results',g=>{
+  g.run("startGame();state='play';completeLevel();afterClear();saveProgress();saveGame.deal=['missing'];continueGame()");
+  eq(g.debug.state,'clear');
  });
 
  return results;
