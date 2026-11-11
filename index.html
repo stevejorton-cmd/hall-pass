@@ -423,7 +423,7 @@
    Hall Pass — a four-period escape from homework
    ============================================================ */
 
-const BUILD = 'BUILD 56';  // shown on the title and the pause screen
+const BUILD = 'BUILD 56 · AUDIT 1';  // shown on the title and the pause screen
 const TS = 16;            // tile size
 const VW = 512, VH = 288; // logical view
 const ROWS = 18;
@@ -473,6 +473,8 @@ let jumpQueued = 0, jumpWasDown = false, upWasDown = false, shoutQueued = 0, any
 /* left mouse button jumps, right mouse button yells — tracked apart from the keys
    so holding Space and clicking don't cancel each other out */
 const mouse = { jump:false, shout:false };
+const inputSources = new Map();
+const pointerResets = [];
 const jumpDown = () => held.jump || mouse.jump;
 
 /* Holding both directions used to cancel out and leave you standing still.
@@ -505,27 +507,9 @@ const KEYMAP = {
 addEventListener('keydown', e => {
   inputPointer = false;
   const a = KEYMAP[e.code];
-  if (a) {
-    if (!held[a]){
-      if (a === 'shout') shoutQueued = 9;
-      if (a === 'left')  lastDir = -1;
-      if (a === 'right') lastDir = 1;
-      if (a === 'bomb' || a === 'mog' || a === 'use') pend[a] = true;
-    }
-    held[a] = true; e.preventDefault();
-  }
-  if (state === 'pickcard' && a && !overlay){
-    if (a === 'left' || a === 'up') { dealSel = (dealSel + deal.length - 1) % deal.length; SFX.select(); }
-    else if (a === 'right' || a === 'down') { dealSel = (dealSel + 1) % deal.length; SFX.select(); }
-    else if (a === 'jump' || a === 'shout') takeCard(dealSel);
-  }
-  /* the machine's panel takes the keyboard while it is open */
-  if (overlay === 'shop' && a){
-    if (a === 'up' || a === 'left') shopMove(-1);
-    else if (a === 'down' || a === 'right') shopMove(1);
-    else if (a === 'jump' || a === 'shout') buySlot(shopSel);
-  }
-  if (a === 'jump' || a === 'up' || e.code === 'Enter') anyKeyTick = true;
+  if (a) e.preventDefault();
+  if (e.repeat) return;                     /* purchases, pause and restart happen once per press */
+  if (a) press(a, true, 'key:' + e.code);
   if (e.code === 'Escape' && overlay) closeOverlay();
   else if (!overlay && (e.code === 'KeyP' || e.code === 'Escape')) togglePause();
   if (e.code === 'KeyO' && !overlay && (state === 'title' || paused)) openOverlay('options');
@@ -538,14 +522,20 @@ addEventListener('keydown', e => {
 
 addEventListener('keyup', e => {
   const a = KEYMAP[e.code];
-  if (a) { held[a] = false; e.preventDefault(); }
+  if (a) { press(a, false, 'key:' + e.code); e.preventDefault(); }
 }, { passive:false });
 
-addEventListener('blur', () => {
-  held.left = held.right = held.jump = held.down = held.up = held.shout = held.bomb = held.mog = false;
+function resetInputs(){
+  inputSources.clear();
+  for (const a in held) held[a] = false;
   mouse.jump = mouse.shout = false;
-  lastDir = 0;
-});
+  jumpQueued = shoutQueued = 0; jumpWasDown = upWasDown = anyKeyTick = false;
+  pend.bomb = pend.mog = pend.use = false;
+  lastDir = 0; gpHeld = {}; gpStart = gpBack = false;
+  for (const reset of pointerResets) reset();
+}
+addEventListener('blur', resetInputs);
+document.addEventListener('visibilitychange', () => { if (document.hidden) resetInputs(); });
 
 /* touch pad
    - every button captures its pointer, so a thumb that rolls off the edge keeps
@@ -633,20 +623,45 @@ const buzz = pat => {
     t += p[k] + (p[k + 1] || 0) + 40;
   }
 };
-function press(act, on){
-  if (on && !held[act]){
+function menuAction(act){
+  if (state === 'pickcard' && !overlay){
+    if (act === 'left' || act === 'up') { dealSel = (dealSel + deal.length - 1) % deal.length; SFX.select(); }
+    else if (act === 'right' || act === 'down') { dealSel = (dealSel + 1) % deal.length; SFX.select(); }
+    else if (act === 'jump' || act === 'shout') takeCard(dealSel);
+    return true;
+  }
+  if (overlay){
+    if (overlay === 'shop'){
+      if (act === 'up' || act === 'left') shopMove(-1);
+      else if (act === 'down' || act === 'right') shopMove(1);
+      else if (act === 'jump' || act === 'shout') buySlot(shopSel);
+    }
+    return true;
+  }
+  return false;
+}
+function press(act, on, source){
+  if (!(act in held)) return;
+  source = source || 'pad:' + act;
+  let sources = inputSources.get(act);
+  if (!sources){ sources = new Set(); inputSources.set(act, sources); }
+  if (on) sources.add(source); else sources.delete(source);
+  const down = sources.size > 0, fresh = down && !held[act];
+  held[act] = down;
+  if (fresh){
+    if (menuAction(act)) { anyKeyTick = false; return; }
     if (act === 'shout') shoutQueued = 9;
     if (act === 'left')  lastDir = -1;
     if (act === 'right') lastDir = 1;
     if (act === 'jump' || act === 'up') anyKeyTick = true;
-    if (act === 'bomb' || act === 'mog' || act === 'use') pend[act] = true;
+    if (state === 'play' && !paused && (act === 'bomb' || act === 'mog' || act === 'use')) pend[act] = true;
   }
-  held[act] = on;
 }
 function bindPad(){
   pad.querySelectorAll('button[data-key]').forEach(b => {
     const act = b.dataset.key;
     let id = null;
+    pointerResets.push(() => { id = null; b.classList.remove('held'); });
     b.addEventListener('pointerdown', ev => {
       ev.preventDefault();
       if (id !== null) return;
@@ -749,7 +764,7 @@ function bindPad(){
 
   /* a game should not scroll, zoom or rubber-band under a thumb */
   document.addEventListener('touchmove', ev => { if (document.body.classList.contains('touch')) ev.preventDefault(); }, { passive:false });
-  addEventListener('blur', () => { release(); });
+  pointerResets.push(release);
 }
 bindPad();
 function setPad(on){
@@ -5062,7 +5077,8 @@ class Player {
   die(){
     this.grabbed = null;
     if (this.dying) return;
-    this.dropWord();                 /* Contra rules: the word dies with you */
+    if (OWN.has('laces') && this.weapon !== W_DEFAULT) keepWord = { w:this.weapon, a:this.ammo };
+    this.dropWord();                 /* laces restore the saved word on respawn */
     this.stock = { bomb:0, mog:0 }; syncStock();
     this.dying = 1; this.vy = -7.4; this.vx = 0; SFX.die(); setTimeout(() => SFX.cooked(), 230); unlock('cooked');
     shake(7); music.on = false; music.setLayer(false);
@@ -9733,7 +9749,7 @@ function loadMeta(){
     seenHints = new Set((localStorage.getItem('hallpass.hints') || '').split(',').filter(Boolean));
     unlockedP = Math.max(1, Math.min(9, parseInt(localStorage.getItem('hallpass.unlocked' + gk()) || '1', 10) || 1));
     dailyBest = parseInt(localStorage.getItem(dailyKey()) || '0', 10) || 0;
-    const sj = localStorage.getItem('hallpass.save' + gk()); saveGame = sj ? JSON.parse(sj) : null;
+    const sj = localStorage.getItem('hallpass.save' + gk()); saveGame = sj ? normaliseSave(JSON.parse(sj)) : null;
     loadEndless(); loadBossBest();
   } catch (e) { saveGame = null; }
   applyStyle();
@@ -9940,10 +9956,64 @@ function writeSave(obj){
   saveGame = obj;
   try { if (obj) localStorage.setItem('hallpass.save' + gk(), JSON.stringify(obj)); else localStorage.removeItem('hallpass.save' + gk()); } catch (e) {}
 }
+function normaliseSave(raw){
+  const obj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  const count = v => Number.isSafeInteger(v) && v >= 0;
+  const value = v => Number.isFinite(v) && v >= 0;
+  if (!obj(raw) || !Number.isInteger(raw.stage) || raw.stage < 0 || raw.stage >= STAGES.length) return null;
+  if (!['score', 'stars', 'lives'].every(k => count(raw[k])) || raw.lives < 1) return null;
+  if (raw.change !== undefined && !count(raw.change)) return null;
+  const mode = raw.mode === undefined ? 'classic' : raw.mode;
+  const phase = raw.phase === undefined ? 'card' : raw.phase;
+  if (!['classic', 'daily'].includes(mode) || !['play', 'card', 'clear', 'pickcard'].includes(phase)) return null;
+  const s = { stage:raw.stage, score:raw.score, stars:raw.stars, lives:raw.lives, mode,
+              change:raw.change === undefined ? 0 : raw.change, phase,
+              mods:Array.isArray(raw.mods) ? [...new Set(raw.mods.filter(id => typeof id === 'string' && modById(id)))] : [],
+              check:null };
+  const c = raw.check;
+  if (obj(c) && c.stage === s.stage && Number.isInteger(c.n) && c.n >= -1 &&
+      value(c.x) && value(c.y)) s.check = { stage:c.stage, n:c.n, x:c.x, y:c.y };
+  if (obj(raw.period)) s.period = raw.period;
+  if (phase === 'clear' || phase === 'pickcard'){
+    const r = raw.result;
+    if (!obj(r) || typeof r.rank !== 'string' || !/^[ABCDF]$/.test(r.rank) ||
+        !['bonus', 'stars', 'total', 'clout', 'comboBest', 'viralPeak', 'hw', 'hwTotal'].every(k => count(r[k]))) return null;
+    const last = r.last;
+    if (!obj(last) || !['sec', 'par', 'best'].every(k => value(last[k]))) return null;
+    s.result = { rank:r.rank, bonus:r.bonus, stars:r.stars, total:r.total, clout:r.clout,
+                 comboBest:r.comboBest, viralPeak:r.viralPeak, hw:r.hw, hwTotal:r.hwTotal,
+                 last:{ sec:last.sec, par:last.par, best:last.best,
+                        newBest:last.newBest === true, under:last.under === true, perfect:last.perfect === true,
+                        secret:last.secret === true, ghost:last.ghost === true } };
+    if (phase === 'pickcard'){
+      const ids = raw.deal;
+      const valid = mode === 'classic' && s.stage + 1 < STAGES.length &&
+        Array.isArray(ids) && ids.length > 0 && ids.length <= 3 && new Set(ids).size === ids.length &&
+        ids.every(id => typeof id === 'string' && modById(id) && !s.mods.includes(id));
+      if (valid){
+        s.deal = ids.slice();
+        s.dealSel = Number.isInteger(raw.dealSel) ? Math.max(0, Math.min(ids.length - 1, raw.dealSel)) : 0;
+      } else s.phase = 'clear';
+    }
+  }
+  return s;
+}
+function restoreSavedPhase(s){
+  if (s.phase !== 'clear' && s.phase !== 'pickcard') return;
+  const r = s.result;
+  periodRank = r.rank; bonus = r.bonus; periodStars = r.stars; periodTotal = r.total;
+  periodClout = r.clout; comboBest = r.comboBest; viralPeak = r.viralPeak;
+  hw = r.hw; hwTotal = r.hwTotal; lastClear = { ...r.last };
+  state = s.phase; clearT = 53; rankStamp = 18; anyKeyTick = false;
+  music.on = false; music.setLayer(false);
+  if (state === 'pickcard'){ deal = s.deal.slice(); dealSel = s.dealSel; }
+}
 function continueGame(){
-  if (!saveGame) return;
-  if (saveGame.mode && saveGame.mode !== MODE){ MODE = saveGame.mode; try { localStorage.setItem('hallpass.mode', MODE); } catch (e) {} }
-  startGame(saveGame.stage, saveGame);
+  const saved = normaliseSave(saveGame);
+  if (!saved){ saveGame = null; toast('SAVE UNAVAILABLE', 'Start a new run to play', '#FF6B57'); return; }
+  saveGame = saved;
+  if (saved.mode !== MODE){ MODE = saved.mode; try { localStorage.setItem('hallpass.mode', MODE); } catch (e) {} }
+  startGame(saved.stage, saved);
 }
 function toTitle(){ state = 'title'; checkAt = null; loadStage(0); music.on = true; }
 
@@ -9977,20 +10047,57 @@ function afterClear(){
    at the end of a period: the stage, the score, the lives, and the checkpoint
    inside the stage, so quitting from halfway up a period puts you back on that
    landing rather than at its front door. */
+/* Resuming a checkpoint keeps the run's clock and damage history. Old saves
+   remain playable, but cannot claim records for history they did not store. */
+let periodRecordValid = true;
+function restorePeriod(s){
+  const p = s && s.period;
+  const valid = p && ['quotaDone','frames','damage','startScore','startStars','runT','timeLeft']
+    .every(k => Number.isFinite(p[k]) && p[k] >= 0);
+  if (valid){
+    quotaDone = Math.min(quotaTotal, Math.floor(p.quotaDone));
+    periodFrames = Math.floor(p.frames); periodDmg = Math.floor(p.damage);
+    periodStartScore = Math.min(score, p.startScore); periodStartStars = Math.min(stars, p.startStars);
+    runT = Math.max(periodFrames, Math.floor(p.runT)); timeLeft = Math.min(level.time, p.timeLeft);
+    periodRecordValid = p.recordValid !== false;
+  } else if (checkAt) periodRecordValid = false;
+}
+function restoreCheckpointPath(){
+  if (!checkAt || checkAt.stage !== stageIndex) return;
+  for (const e of level.ents){
+    if (!(e instanceof PinkLock) || e.open) continue;
+    const gate = e.gate, floorY = (gate.y + gate.h) * TS;
+    const past = level.mirrored ? checkAt.x + player.w <= gate.x * TS
+      : checkAt.x >= (gate.x + (gate.w || 1)) * TS;
+    if (!past || Math.abs(checkAt.y + player.h - floorY) > 2) continue;
+    level.clapped = Math.max(level.clapped || 0, e.need); e.open = true; openGate(gate, e);
+  }
+}
+
 function saveProgress(){
-  if (MODE === 'speed' || MODE === 'endless' || MODE === 'boss') return;   /* all one sitting */
-  writeSave({ stage:stageIndex, score, stars, lives:Math.max(1, lives), mode:MODE, change,
-              mods:[...mods],
-              check:(checkAt && checkAt.stage === stageIndex) ? checkAt : null });
+  if (MODE === 'speed' || MODE === 'endless' || MODE === 'boss') return false;
+  const completed = state === 'clear' || state === 'pickcard';
+  const obj = { stage:stageIndex, score, stars, lives:Math.max(1, lives), mode:MODE, change,
+                mods:[...mods], phase:completed ? state : 'card',
+                period:{ quotaDone, frames:periodFrames, damage:periodDmg, startScore:periodStartScore,
+                         startStars:periodStartStars, runT, timeLeft, recordValid:periodRecordValid },
+                check:(checkAt && checkAt.stage === stageIndex) ? checkAt : null };
+  if (completed){
+    obj.result = { rank:periodRank, bonus, stars:periodStars, total:periodTotal, clout:periodClout,
+                   comboBest, viralPeak, hw, hwTotal, last:lastClear && { ...lastClear } };
+    if (state === 'pickcard'){ obj.deal = deal.slice(); obj.dealSel = dealSel; }
+  }
+  writeSave(obj);
+  return true;
 }
 /* leave for the title screen from anywhere, keeping the run */
 function quitToTitle(){
-  const inRun = state === 'play' || state === 'card' || state === 'clear' || paused;
+  const inRun = state === 'play' || state === 'card' || state === 'clear' || state === 'pickcard' || paused;
   if (inRun){
-    saveProgress();
+    const saved = saveProgress();
     if (score > best){ best = score; saveBest(); }
     saveMeta();
-    toast('PROGRESS SAVED', 'CONTINUE on the title picks it up', '#7FE8C0');
+    if (saved) toast('PROGRESS SAVED', 'CONTINUE on the title picks it up', '#7FE8C0');
   }
   paused = false; overlay = null; tut = null;
   toTitle();
@@ -10235,18 +10342,26 @@ function loadStage(i, fresh){
   /* respawn at the last checkpoint reached, if it belongs to this period */
   let sx = level.start.x, sy = level.start.y;
   if (checkAt && checkAt.stage === i){
+    const cps = level.ents.filter(en => en instanceof Checkpoint);
+    if (!Number.isInteger(checkAt.n) || checkAt.n < -1 || checkAt.n >= cps.length ||
+        !Number.isFinite(checkAt.x) || !Number.isFinite(checkAt.y) ||
+        checkAt.x < 0 || checkAt.x > level.width * TS - 12 ||
+        checkAt.y < 0 || checkAt.y > level.height * TS - 15) checkAt = null;
+  }
+  if (checkAt && checkAt.stage === i){
     sx = checkAt.x; sy = checkAt.y;
     let n = 0;
     for (const en of level.ents) if (en instanceof Checkpoint){ if (n <= checkAt.n) en.on = true; n++; }
   }
   player.reset(sx, sy);
+  restoreCheckpointPath();
   camera.x = Math.max(0, Math.min(level.width*TS - VW, player.cx - VW*0.42));
   camera.sh = 0; camera.zoom = 1; camera.look = 0;
   camera.y = Math.max(0, Math.min(level.height*TS - VH, player.cy - VH*0.5));
   resetFx();
   /* everything collectable in this period, for the grade at the end */
   periodStars = 0; periodRank = ''; rankStamp = 0;
-  if (fresh !== false){ periodDmg = 0; periodFrames = 0; periodStartScore = score; periodStartStars = stars; periodClout = 0; }
+  if (fresh !== false){ periodRecordValid = true; periodDmg = 0; periodFrames = 0; periodStartScore = score; periodStartStars = stars; periodClout = 0; }
   periodTotal = level.ents.filter(en => en instanceof Star).length;
   for (let y = 0; y < level.height; y++)
     for (let x = 0; x < level.width; x++)
@@ -10276,11 +10391,15 @@ function startGame(from, resume){
   checkAt = (resume && resume.check && resume.check.stage === from) ? resume.check : null;
   tut = (MODE !== 'speed' && from === 0 && !resume && tutorialWanted()) ? { step:0, t:0, x0:0 } : null;
   loadStage(from);
+  if (resume){ restorePeriod(resume); ghostRec = null; }
   state = 'card'; cardT = 0;
+  if (resume) restoreSavedPhase(resume);
   SFX.select();
 }
 
 function loseLife(){
+  /* A pit skips die(); capture its word here before either respawn path. */
+  if (OWN.has('laces') && player.weapon !== W_DEFAULT) keepWord = { w:player.weapon, a:player.ammo };
   if (MODE === 'speed'){                    /* no game over: every death costs five seconds */
     runT += 300;
     loadStage(stageIndex, false);
@@ -10288,7 +10407,6 @@ function loseLife(){
     floats.push({ x:player.cx, y:player.y - 20, life:80, text:'+5s', big:true });
     return;
   }
-  if (OWN.has('laces') && player.weapon !== W_DEFAULT) keepWord = { w:player.weapon, a:player.ammo };
   lives--;
   if (lives <= 0 && pardon){
     /* the pardon: signed, used, and gone */
@@ -10315,26 +10433,26 @@ function completeLevel(){
   score += bonus;
   periodRank = rankFor(level.time - timeLeft, level.time, periodDmg, periodStars, periodTotal);
   const rec = MODE !== 'endless' && MODE !== 'boss';   /* an arena is not period n */
-  if (rec) noteRank(stageIndex, periodRank);
+  if (rec && periodRecordValid) noteRank(stageIndex, periodRank);
   /* records: time against par, every star, the secret */
   const sec = periodFrames / 60, par = level.time * 0.45 * 25 / 60;      /* real play time, across respawns */
   const prev = bestTimes[stageIndex];
-  const newBest = rec && !OPTS.assist && (!prev || sec < prev);
+  const newBest = rec && periodRecordValid && !OPTS.assist && (!prev || sec < prev);
   if (newBest) bestTimes[stageIndex] = sec;
   const allStars = periodTotal > 0 && periodStars >= periodTotal;
   if (allStars){ if (rec) perfect[stageIndex] = true; score += 2000; }
   const hadGhost = !!ghostPlay;
-  if (newBest || !hadGhost) ghostSave(stageIndex);
-  lastClear = { sec, par, best:prev, newBest, under:sec <= par, perfect:allStars,
+  if (periodRecordValid && (newBest || !hadGhost)) ghostSave(stageIndex);
+  lastClear = { sec, par, best:prev, newBest, under:periodRecordValid && sec <= par, perfect:allStars,
                 secret:!!runSecret[stageIndex], ghost:hadGhost && newBest };
   if (MODE === 'speed') runSplits[stageIndex] = runT / 60;
   if (rec) unlockedP = Math.max(unlockedP, Math.min(9, stageIndex + 2));
   saveMeta();
   unlock('bell'); if (D.flipAtStart) unlock('ngplus');
-  if (periodDmg === 0) unlock('flawless');
+  if (periodRecordValid && periodDmg === 0) unlock('flawless');
   if (allStars){ unlock('allstars'); if (perfect.every(Boolean)) unlock('hoard'); }
   if (lastClear.under && !OPTS.assist) unlock('underpar');
-  if (periodRank === 'A') unlock('honor');
+  if (periodRecordValid && periodRank === 'A') unlock('honor');
   if (bestRanks.every(r => r === 'A')) unlock('straight');
   /* the grade is the payslip: an A pays five times what a pass does, which is
      the whole reason to go back and do a period properly */
@@ -10423,7 +10541,7 @@ function update(){
   updateToasts(); pollGamepad(); tickStyle();
   if (isLight() && parts.length > 90) parts.splice(0, parts.length - 90);
   if (overlay){ anyKeyTick = false; return; }
-  if (state !== 'play') pend.bomb = pend.mog = false;
+  if (state !== 'play' || paused) pend.bomb = pend.mog = pend.use = false;
   if (camera.sh > 0) camera.sh *= 0.86;
   if (camera.sh < 0.2) camera.sh = 0;
 
@@ -11345,7 +11463,11 @@ function activePad(){
 }
 function pollGamepad(){
   const gp = activePad();
-  if (!gp) return;
+  if (!gp){
+    for (const a in gpHeld) if (gpHeld[a]) press(a, false, 'gamepad:' + a);
+    gpHeld = {}; gpStart = gpBack = false;
+    return;
+  }
   const b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
   const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
   const want = {
@@ -11355,7 +11477,7 @@ function pollGamepad(){
   for (const a in want){
     if (!!gpHeld[a] === want[a]) continue;
     gpHeld[a] = want[a];
-    press(a, want[a]);
+    press(a, want[a], 'gamepad:' + a);
   }
   const st = b(9), bk = b(1);
   if (st && !gpStart){ if (overlay) closeOverlay(); else if (state === 'title') anyKeyTick = true; else togglePause(); }
@@ -11990,18 +12112,8 @@ window.HallPassDebug = {
      the false->true transition; setting held.shout = true directly meant the
      bot never actually yelled — so it never parried and never fought a boss,
      in any run. */
-  press(k, on){
-    if (!(k in held)) return;
-    on = !!on;
-    if (on && !held[k]){
-      if (k === 'shout') shoutQueued = 9;
-      if (k === 'left')  lastDir = -1;
-      if (k === 'right') lastDir = 1;
-      if (k === 'jump' || k === 'up') anyKeyTick = true;
-    }
-    held[k] = on;
-  },
-  release(){ for (const k in held) held[k] = false; },
+  press(k, on){ press(k, !!on, 'debug:' + k); },
+  release(){ resetInputs(); },
   solid(tx, ty){ return solidAt(tx, ty); },
   tile(tx, ty){ return tileAt(tx, ty); },
   hazard(x, y){ return hazardAt(x, y); },
@@ -12668,6 +12780,7 @@ window.HallPassDebug = {
 
 /* ---------- boot ---------- */
 function boot(){
+  if (state !== 'boot') return;              /* the font timeout and promise share one boot */
   loadStage(0);
   state = 'title';
   last = performance.now();
