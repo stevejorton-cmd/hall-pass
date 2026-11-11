@@ -6,9 +6,13 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: hall-pass-audit-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   regressions:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    container: mcr.microsoft.com/playwright:v1.64.1-noble
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -18,9 +22,7 @@ jobs:
       - name: Run deterministic game regressions
         run: node tests/regression.mjs
       - name: Install browser test tooling
-        run: npm install --no-save --package-lock=false playwright@1.56.1
-      - name: Install browser engines
-        run: npx playwright install --with-deps chromium firefox webkit
+        run: npm install --no-save --package-lock=false playwright@1.64.1
       - name: Run browser and live-version checks
         run: node tests/browser.mjs
       - uses: actions/upload-artifact@v4
@@ -28,3 +30,7 @@ jobs:
         with:
           name: hall-pass-audit-evidence
           path: test-results/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hall-pass-playable-preview
+          path: index.html
