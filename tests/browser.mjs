@@ -13,8 +13,9 @@ const failures=[];
 await mkdir('test-results',{recursive:true});
 try {
  for(const [name,engine] of Object.entries({chromium,firefox,webkit})){
-  const browser=await engine.launch();
+  let browser;
   try {
+   browser=await engine.launch();
    for(const mobile of [false,true]){
     const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1280,height:900},hasTouch:mobile,...(name!=='firefox'?{isMobile:mobile}:{})});
     const page=await context.newPage(),errors=[];
@@ -57,7 +58,7 @@ try {
     await context.close();
    }
   }catch(e){failures.push(name+': '+e.stack);}
-  finally{await browser.close();}
+  finally{if(browser)await browser.close();}
  }
  const sha=s=>createHash('sha256').update(s).digest('hex');
  try{
