@@ -1,0 +1,30 @@
+name: Hall Pass audit
+on:
+  push:
+    branches: ['audit/hall-pass-2026-11-11']
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run deterministic game regressions
+        run: node tests/regression.mjs
+      - name: Install browser test tooling
+        run: npm install --no-save --package-lock=false playwright@1.56.1
+      - name: Install browser engines
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Run browser and live-version checks
+        run: node tests/browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hall-pass-audit-evidence
+          path: test-results/
